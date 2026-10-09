@@ -1,3 +1,4 @@
+
 from app.database import get_connection
 
 
@@ -7,65 +8,69 @@ def check_availability(
     appointment_time: str
 ):
     connection = get_connection()
-    cursor = connection.cursor()
 
-    # Find the doctor
-    cursor.execute(
-        """
-        SELECT id, name, specialty
-        FROM doctors
-        WHERE LOWER(name) = LOWER(?)
-        """,
-        (doctor_name,)
-    )
+    try:
+        cursor = connection.cursor()
 
-    doctor = cursor.fetchone()
-
-    if doctor is None:
-        connection.close()
-
-        return {
-            "available": False,
-            "reason": "doctor_not_found"
-        }
-
-    # Check whether the requested slot is already booked
-    cursor.execute(
-        """
-        SELECT id
-        FROM appointments
-        WHERE doctor_id = ?
-          AND appointment_date = ?
-          AND appointment_time = ?
-          AND status = 'booked'
-        """,
-        (
-            doctor["id"],
-            appointment_date,
-            appointment_time
+        cursor.execute(
+            """
+            SELECT id, name, specialty
+            FROM doctors
+            WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+            """,
+            (doctor_name.strip(),)
         )
-    )
 
-    appointment = cursor.fetchone()
+        doctor = cursor.fetchone()
 
-    connection.close()
+        if doctor is None:
+            return {
+                "available": False,
+                "reason": "doctor_not_found",
+                "message": (
+                    f"Doctor '{doctor_name}' does not exist "
+                    "in the database."
+                )
+            }
 
-    if appointment is not None:
+        cursor.execute(
+            """
+            SELECT id
+            FROM appointments
+            WHERE doctor_id = ?
+              AND appointment_date = ?
+              AND appointment_time = ?
+              AND status = 'booked'
+            """,
+            (
+                doctor["id"],
+                appointment_date,
+                appointment_time
+            )
+        )
+
+        appointment = cursor.fetchone()
+
+        if appointment is not None:
+            return {
+                "available": False,
+                "reason": "slot_already_booked",
+                "doctor": doctor["name"],
+                "date": appointment_date,
+                "time": appointment_time
+            }
+
         return {
-            "available": False,
-            "reason": "slot_already_booked",
+            "available": True,
             "doctor": doctor["name"],
+            "specialty": doctor["specialty"],
             "date": appointment_date,
             "time": appointment_time
         }
 
-    return {
-        "available": True,
-        "doctor": doctor["name"],
-        "specialty": doctor["specialty"],
-        "date": appointment_date,
-        "time": appointment_time
-    }
+    finally:
+        connection.close()
+
 
 def book_appointment(
     doctor_name: str,
@@ -74,96 +79,107 @@ def book_appointment(
     appointment_time: str,
     confirmed: bool
 ):
-    if not confirmed:
+    if confirmed is not True:
         return {
             "booked": False,
-            "reason": "patient_confirmation_required"
+            "reason": "patient_confirmation_required",
+            "message": "Explicit patient confirmation is required."
         }
 
     connection = get_connection()
-    cursor = connection.cursor()
 
-    # Find the doctor
-    cursor.execute(
-        """
-        SELECT id, name, specialty
-        FROM doctors
-        WHERE LOWER(name) = LOWER(?)
-        """,
-        (doctor_name,)
-    )
+    try:
+        cursor = connection.cursor()
 
-    doctor = cursor.fetchone()
+        # Step 1: Verify the doctor exists.
+        cursor.execute(
+            """
+            SELECT id, name, specialty
+            FROM doctors
+            WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+            """,
+            (doctor_name.strip(),)
+        )
 
-    if doctor is None:
-        connection.close()
+        doctor = cursor.fetchone()
+
+        if doctor is None:
+            return {
+                "booked": False,
+                "reason": "doctor_not_found",
+                "message": (
+                    f"Doctor '{doctor_name}' does not exist. "
+                    "No appointment was booked."
+                )
+            }
+
+        # Step 2: Check that the requested slot is available.
+        cursor.execute(
+            """
+            SELECT id
+            FROM appointments
+            WHERE doctor_id = ?
+              AND appointment_date = ?
+              AND appointment_time = ?
+              AND status = 'booked'
+            """,
+            (
+                doctor["id"],
+                appointment_date,
+                appointment_time
+            )
+        )
+
+        existing_appointment = cursor.fetchone()
+
+        if existing_appointment is not None:
+            return {
+                "booked": False,
+                "reason": "slot_already_booked",
+                "message": "This time slot is already booked."
+            }
+
+        # Step 3: Create the appointment.
+        cursor.execute(
+            """
+            INSERT INTO appointments (
+                doctor_id,
+                patient_name,
+                appointment_date,
+                appointment_time,
+                status
+            )
+            VALUES (?, ?, ?, ?, 'booked')
+            """,
+            (
+                doctor["id"],
+                patient_name,
+                appointment_date,
+                appointment_time
+            )
+        )
+
+        appointment_id = cursor.lastrowid
+        connection.commit()
 
         return {
-            "booked": False,
-            "reason": "doctor_not_found"
+            "booked": True,
+            "appointment_id": appointment_id,
+            "doctor": doctor["name"],
+            "specialty": doctor["specialty"],
+            "patient": patient_name,
+            "date": appointment_date,
+            "time": appointment_time,
+            "message": "Appointment booked successfully."
         }
 
-    # Check whether the slot is already booked
-    cursor.execute(
-        """
-        SELECT id
-        FROM appointments
-        WHERE doctor_id = ?
-          AND appointment_date = ?
-          AND appointment_time = ?
-          AND status = 'booked'
-        """,
-        (
-            doctor["id"],
-            appointment_date,
-            appointment_time
-        )
-    )
+    except Exception:
+        connection.rollback()
+        raise
 
-    existing_appointment = cursor.fetchone()
-
-    if existing_appointment is not None:
+    finally:
         connection.close()
 
-        return {
-            "booked": False,
-            "reason": "slot_already_booked"
-        }
-
-    # Create the appointment
-    cursor.execute(
-        """
-        INSERT INTO appointments (
-            doctor_id,
-            patient_name,
-            appointment_date,
-            appointment_time,
-            status
-        )
-        VALUES (?, ?, ?, ?, 'booked')
-        """,
-        (
-            doctor["id"],
-            patient_name,
-            appointment_date,
-            appointment_time
-        )
-    )
-
-    appointment_id = cursor.lastrowid
-
-    connection.commit()
-    connection.close()
-
-    return {
-        "booked": True,
-        "appointment_id": appointment_id,
-        "doctor": doctor["name"],
-        "specialty": doctor["specialty"],
-        "patient": patient_name,
-        "date": appointment_date,
-        "time": appointment_time
-    }
 
 def get_appointment(
     doctor_name: str,
@@ -172,38 +188,42 @@ def get_appointment(
     appointment_time: str
 ):
     connection = get_connection()
-    cursor = connection.cursor()
 
-    cursor.execute(
-        """
-        SELECT
-            appointments.id,
-            doctors.name AS doctor,
-            appointments.patient_name,
-            appointments.appointment_date,
-            appointments.appointment_time,
-            appointments.status
-        FROM appointments
-        JOIN doctors
-            ON appointments.doctor_id = doctors.id
-        WHERE LOWER(doctors.name) = LOWER(?)
-          AND LOWER(appointments.patient_name) = LOWER(?)
-          AND appointments.appointment_date = ?
-          AND appointments.appointment_time = ?
-        """,
-        (
-            doctor_name,
-            patient_name,
-            appointment_date,
-            appointment_time
+    try:
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                appointments.id,
+                doctors.name AS doctor,
+                appointments.patient_name,
+                appointments.appointment_date,
+                appointments.appointment_time,
+                appointments.status
+            FROM appointments
+            JOIN doctors
+                ON appointments.doctor_id = doctors.id
+            WHERE LOWER(TRIM(doctors.name)) = LOWER(TRIM(?))
+              AND LOWER(TRIM(appointments.patient_name))
+                  = LOWER(TRIM(?))
+              AND appointments.appointment_date = ?
+              AND appointments.appointment_time = ?
+            """,
+            (
+                doctor_name.strip(),
+                patient_name.strip(),
+                appointment_date,
+                appointment_time
+            )
         )
-    )
 
-    appointment = cursor.fetchone()
+        appointment = cursor.fetchone()
 
-    connection.close()
+        if appointment is None:
+            return None
 
-    if appointment is None:
-        return None
+        return dict(appointment)
 
-    return dict(appointment)
+    finally:
+        connection.close()
