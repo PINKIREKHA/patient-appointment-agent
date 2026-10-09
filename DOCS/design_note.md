@@ -115,3 +115,13 @@ One important engineering decision was to separate model reasoning from critical
 The LLM is responsible for understanding the conversation and using the available tools, while the application remains responsible for validating confirmation and performing the actual database mutation.
 
 When the evaluation exposed the confirmation failure, I used the observed behavior to make a targeted change rather than simply changing the expected evaluation result.
+
+#  One Production Improvement
+
+For a real clinic, I would introduce transactional, concurrency-safe appointment booking with a database-level constraint preventing duplicate bookings for the same doctor and time slot. This is important because two patients could attempt to book the same slot simultaneously. I would also add authentication, role-based access control, audit logging, and appropriate protection for patient information.
+
+## Where AI Helped—and Where My Judgment Mattered
+
+AI helped me develop the tool structure, reason through debugging possibilities, and identify additional test cases. However, I used the evaluator output and database state to verify whether the suggested fixes actually worked. My judgment was important in keeping confirmation handling strict: accepting more natural confirmation phrases should not mean treating uncertain or negative responses as permission to book.
+
+The key lesson was that a conversational agent needs more than a fluent response. Its actions must be validated by deterministic application logic and verified against persistent state.
